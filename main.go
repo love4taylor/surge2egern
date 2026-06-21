@@ -759,14 +759,9 @@ func fetchURL(rawURL string, timeout int) (string, []string, error) {
 		return "", nil, fmt.Errorf("HTTP %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
-	// Reject non-text content types (HTML error pages, etc.)
-	ct := resp.Header.Get("Content-Type")
-	if ct != "" {
-		mediaType := strings.SplitN(ct, ";", 2)[0]
-		if mediaType != "text/plain" && !strings.HasPrefix(mediaType, "text/") {
-			return "", nil, fmt.Errorf("unexpected Content-Type: %s (expected text/plain)", ct)
-		}
-	}
+	// Reject HTML error pages by inspecting body content (Content-Type header
+	// is often unreliable — some CDNs send text/plain for HTML error pages,
+	// while valid rule sets may be served as application/octet-stream).
 
 	finalURL := resp.Request.URL.String()
 	if finalURL != rawURL {
