@@ -736,14 +736,36 @@ func fetchURL(rawURL string, timeout int) (string, []string, error) {
 	req.Header.Set("User-Agent", "surge2egern/2.0")
 	req.Header.Set("Accept", "text/plain,*/*")
 
-	resp, err := client.Do(req)
+	// Retry on transient errors (max 3 attempts)
+	var resp *http.Response
+	for attempt := 1; attempt <= 3; attempt++ {
+		resp, err = client.Do(req)
+		if err == nil {
+			break
+		}
+		if attempt < 3 {
+			wait := time.Duration(attempt) * time.Second
+			fmt.Fprintf(os.Stderr, "   ↳ retry %d/3 after %v: %v\n", attempt, wait, err)
+			time.Sleep(wait)
+		}
+	}
 	if err != nil {
-		return "", nil, fmt.Errorf("request failed: %w", err)
+		return "", nil, fmt.Errorf("request failed after retries: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Reject non-200 status
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("HTTP %s", resp.Status)
+		return "", nil, fmt.Errorf("HTTP %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+
+	// Reject non-text content types (HTML error pages, etc.)
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" {
+		mediaType := strings.SplitN(ct, ";", 2)[0]
+		if mediaType != "text/plain" && !strings.HasPrefix(mediaType, "text/") {
+			return "", nil, fmt.Errorf("unexpected Content-Type: %s (expected text/plain)", ct)
+		}
 	}
 
 	finalURL := resp.Request.URL.String()
@@ -751,15 +773,42 @@ func fetchURL(rawURL string, timeout int) (string, []string, error) {
 		fmt.Fprintf(os.Stderr, "   ↳ redirected to %s\n", finalURL)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10 MB limit
 	if err != nil {
 		return "", nil, fmt.Errorf("read body: %w", err)
 	}
 
 	text := string(body)
+	if len(body) == 0 {
+		return "", nil, fmt.Errorf("empty response body")
+	}
+
+	// Heuristic: reject responses that look like HTML error pages
+	if looksLikeHTML(text) {
+		return "", nil, fmt.Errorf("response looks like HTML, not a rule set (server may be down)")
+	}
+
 	lines := strings.Split(text, "\n")
 	fmt.Fprintf(os.Stderr, "   ✓ %d lines, %d bytes\n", len(lines), len(body))
 	return finalURL, lines, nil
+}
+
+func looksLikeHTML(text string) bool {
+	// Trim leading whitespace (Cloudflare error pages often start with blank lines)
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 {
+		return false
+	}
+	// Check for HTML signatures in the first 512 bytes
+	head := trimmed
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	lower := strings.ToLower(head)
+	return strings.Contains(lower, "<!doctype") ||
+		strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<head") ||
+		strings.Contains(lower, "<body")
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
