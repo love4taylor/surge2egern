@@ -279,6 +279,12 @@ func parseLogicalBody(expr string) [][2]any { // returns []{type: string, vals: 
 			}
 		}
 	}
+	if depth < 0 {
+		warn("Unbalanced parentheses in logical rule — unexpected ')'")
+	}
+	if depth > 0 {
+		warn("Unbalanced parentheses in logical rule — missing ')'")
+	}
 	return out
 }
 
